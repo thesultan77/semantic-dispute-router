@@ -134,9 +134,22 @@ Respond with strict JSON only, no markdown, no extra text:
             judge,
             "The ruling field must match exactly (PARTY_A, PARTY_B, or SPLIT). Reasoning wording may vary but must express the same underlying judgment.",
         )
-        parsed = json.loads(raw)
+
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            raise Exception("Judge output was not valid JSON; refusing to change state.")
+
+        assert isinstance(parsed, dict), "Judge output was not a JSON object; refusing to change state."
+        assert "ruling" in parsed, "Judge output missing 'ruling' field; refusing to change state."
+        assert "reasoning" in parsed, "Judge output missing 'reasoning' field; refusing to change state."
+
         ruling = parsed["ruling"]
         reasoning = parsed["reasoning"]
+
+        assert isinstance(ruling, str), "Judge 'ruling' field was not a string; refusing to change state."
+        assert isinstance(reasoning, str), "Judge 'reasoning' field was not a string; refusing to change state."
+        assert ruling in ("PARTY_A", "PARTY_B", "SPLIT"), "Judge 'ruling' was outside the allowed domain (PARTY_A/PARTY_B/SPLIT); refusing to change state."
 
         self.ruling_map[dispute_id] = ruling
         self.reasoning_map[dispute_id] = reasoning
