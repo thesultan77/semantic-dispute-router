@@ -25,7 +25,13 @@ judgment, the contract:
    validator consensus (`gl.eq_principle.prompt_comparative`) ensuring
    multiple independent LLM runs agree on the categorical outcome before
    it's accepted on-chain.
-4. Pays out the staked pool according to the ruling, and records the new
+4. **Explicitly validates the judge's output before any state change**:
+   the raw response must parse as JSON, be a JSON object, contain both a
+   `ruling` and `reasoning` field of the correct type, and `ruling` must be
+   exactly one of `PARTY_A`, `PARTY_B`, or `SPLIT`. Any malformed, missing,
+   wrongly typed, or out-of-domain output causes the transaction to fail
+   safely (revert) rather than silently falling through to a default payout.
+5. Pays out the staked pool according to the ruling, and records the new
    case (with its ruling and reasoning) as a precedent for future disputes.
 
 The result is a growing, on-chain "case law" bank: as more disputes get
@@ -48,8 +54,9 @@ system builds on prior rulings rather than reinventing judgment each time.
 |---|---|
 | Dispute state | Parallel `TreeMap[str, ...]` fields per dispute ID (description, parties, status, ruling, reasoning, stakes) |
 | Precedent memory | `VecDB[float32, 384, Precedent]` — vector search over prior resolved cases |
-| Embeddings | `SentenceTransformer("all-MiniLM-L6-v2")` via `genlayer_embeddings` |
+| Embeddings | `SentenceTransformer("all-MiniLM-L6-v2")`, called via `get_embedding_generator()(text)` |
 | AI judgment | `gl.nondet.exec_prompt` inside a closure, reconciled across validators via `gl.eq_principle.prompt_comparative` |
+| Output safety | Judge output is validated (JSON structure, field presence, types, and domain of `ruling`) before any state mutation, fund transfer, or precedent write is allowed to proceed |
 | Fund safety | Stakes only move on `RESOLVED` (to winner(s)) or `CANCELLED` (refund to party_a, only before party_b accepts) |
 
 Dispute records are stored as parallel primitive `TreeMap`s (one map per
@@ -74,8 +81,10 @@ primitives.
 - **`resolve_dispute(dispute_id: str) -> str`**
   Triggers the AI arbitration flow: fetches similar precedents, prompts the
   LLM for a `PARTY_A` / `PARTY_B` / `SPLIT` ruling with reasoning, reaches
-  validator consensus, pays out the stake pool accordingly, and records the
-  case as a new precedent. Returns `"<RULING> - <reasoning>"`.
+  validator consensus, validates the parsed output's structure and domain,
+  pays out the stake pool accordingly, and records the case as a new
+  precedent. Returns `"<RULING> - <reasoning>"`. Reverts safely if the
+  judge's output fails validation.
 - **`cancel_dispute(dispute_id: str)`**
   Party A can cancel and reclaim their stake, but only while the dispute is
   still `OPEN` (i.e. before Party B has accepted).
@@ -102,6 +111,12 @@ primitives.
   semantic similarity before a second, related dispute was resolved.
 - `cancel_dispute` confirmed to correctly refund Party A when invoked before
   Party B accepts.
+- **Output-validation fix retested**: after adding explicit JSON/type/domain
+  validation to `resolve_dispute` (in response to reviewer feedback about
+  the SPLIT branch being an unsafe silent catch-all for malformed judge
+  output), the full lifecycle was re-run end-to-end and confirmed to behave
+  identically for valid judge output — the fix closes the unsafe fallback
+  path without changing normal-case behavior.
 - All test transactions reached `FINALIZED` / `SUCCESS` with supermajority
   validator agreement.
 
@@ -132,6 +147,11 @@ Constructor takes no arguments. Deploy directly in GenLayer Studio or via
   a GenVM storage serialization error; using `VecDB` as the dataclass's
   container works fine, and parallel primitive `TreeMap`s work as a
   reliable workaround when a `TreeMap` of structured records is needed.
+- LLM-judge output must never be trusted implicitly: always explicitly
+  validate structure, field presence, types, and the allowed domain of any
+  categorical field *before* using it to gate state changes or fund
+  transfers. An unvalidated `else`/default branch on judge output is a
+  silent-failure risk, not a safe fallback.
 
 ## License
 
